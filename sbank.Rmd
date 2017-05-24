@@ -1,0 +1,202 @@
+---
+title: "Sberbank Springboard Capstone project"
+author: "Dylan Distasio"
+date: "May 22, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, message=FALSE}
+# Load required packages
+library(tidyverse)
+library(corrplot)
+library(lubridate)
+# Load training data set
+train <- read.csv("train.csv")
+# Load macroeconomic information
+macro <- read.csv("macro.csv")
+# Load the test data set
+test <- read.csv("test.csv")
+# Convert timestamp columns to date type
+train$timestamp <- as.Date(train$timestamp)
+test$timestamp <- as.Date(test$timestamp)
+macro$timestamp <- as.Date(macro$timestamp)
+# Join training and macroeconomic data based on timestamp date
+comb <- left_join(train,macro,by="timestamp")
+comb$year <- as.numeric(year(comb$timestamp)) #add year
+comb$month <- as.numeric(month(comb$timestamp)) #add month
+# Join test and macroeconomic data based on timestamp date
+combtest <- left_join(test,macro,by="timestamp")
+combtest$year <- as.numeric(year(combtest$timestamp)) #add year
+combtest$month <- as.numeric(month(combtest$timestamp)) #add month
+
+```
+
+
+```{r}
+# Missing values in training dataset
+miss_pct <- map_dbl(train, function(x) { round((sum(is.na(x)) / length(x)) * 100, 1) })
+
+miss_pct <- miss_pct[miss_pct > 0]
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+    ggplot(aes(x=reorder(var, -miss), y=miss)) + 
+    geom_bar(stat='identity', fill='red') +
+    labs(x='', y='% missing', title='Percent missing data by feature - Train') +
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+```
+
+```{r}
+#Missing values in macroeconomic data
+miss_pct <- map_dbl(macro, function(x) { round((sum(is.na(x)) / length(x)) * 100, 1) })
+
+miss_pct <- miss_pct[miss_pct > 0]
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+    ggplot(aes(x=reorder(var, -miss), y=miss)) + 
+    geom_bar(stat='identity', fill='red') +
+    labs(x='', y='% missing', title='Percent missing data by feature - Macroeconomic data') +
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+```
+Summary of missing values by column:
+```{r}
+colSums(sapply(comb, is.na))
+```
+
+# Data Cleaning
+The state feature is related to the apartment condition.  Valid values are 1-4 with 1 being the worst condition and 4 being the best.  The data contains what appears to be one erroneous outlier at 33:
+```{r echo=FALSE}
+table(comb$state)
+```
+```{r}
+comb <- subset(comb,state!=33) #remove outlier in apartment condition feature
+```
+Let's take a look at the distribution of Sales Prices
+
+```{r}
+#Examine distribution of prices
+salesdist <- ggplot(comb,aes(x=price_doc))+geom_histogram(col="blue",bins=500)+labs(x="Sales Price")
+summary(comb$price_doc)
+salesdist
+```
+
+Sales prices are skewed with a long tail.
+
+```{r message=FALSE}
+#Plot Sales Price over time by year
+ggplot(comb,aes(x=year,y=price_doc))+geom_line(stat="summary",color="blue",size=1.5)+geom_point(size=5,color="blue",fill="white",shape=21,stat="summary")+labs(x="Sale Date",y="Sales Price",title="Sales Prices by Year")
+```
+
+Sales prices were rising throughout the time period of the training dataset.
+
+```{r message=FALSE}
+#Plot sales prices by month to look for seasonal effects
+ggplot(comb,aes(x=month,y=price_doc))+geom_line(stat="summary",color="blue",size=1.5)+geom_point(size=5,color="blue",fill="white",shape=21,stat="summary")+labs(x="Sale Date",y="Sales Price",title="Seasonality of Sales Prices")+scale_x_continuous(breaks=1:12,labels=c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"))
+```
+
+It appears that there may be some seasonality present in realty prices, with highest prices early in the year, and weakness in mid Fall.
+
+There are sales from 146 different sub regions captured in the training dataset.
+
+Sales prices by geographical sub region:
+```{r message=FALSE}
+ggplot(comb, aes(x=sub_area, y=price_doc)) + 
+      geom_bar(fill="blue", size=10,stat="summary") +   # Draw points
+           labs(title="Sales price by region",y="Sales Price",x="Sub Area") +  
+      coord_flip()+theme(axis.text.y=element_text(hjust=1,size=4))
+```
+
+There appears to be substantial variation in average sales price based on sub region, so this may be a good feature to incoporate into our regression model.
+
+
+Breakdown of apartments by condition:
+```{r}
+ggplot(data=comb,aes(state))+geom_bar(fill="blue")+labs(x="Apartment Condition",title="Count by Apartment Condition"                           )+scale_x_continuous(breaks=1:4,labels=c("1=Worst","2","3","4=Best"))
+```
+
+The majority of properties are in a moderately good condition (2-3) in this dataset with a small number of properties in the best condition on a relative basis.
+
+Let's look at how sales price relates to apartment condition:
+```{r message=FALSE}
+ ggplot(comb,aes(x=state,y=price_doc))+geom_line(stat="summary",color="blue",size=1.5)+geom_point(size=5,color="blue",fill="white",shape=21,stat="summary")+labs(x="Apartment Condition",y="Sales Price",title="Sales price based on Apartment Condition")+scale_x_continuous(breaks=1:4,labels=c("1=worst","2","3","4=Best"))
+```
+
+
+```{r}
+# Add month and year columns to dataframe based on timestamp to aid in further analysis
+comb$year <- make_date(year=year(comb$timestamp))
+comb$month <- make_date(month=month(comb$timestamp))
+
+```
+
+```{r}
+# variables that are related to home
+home <- c('full_sq', 'life_sq', 'floor', 'max_floor', 'build_year', 'num_room', 
+                    'kitch_sq', 'state', 'price_doc')
+
+corrplot(cor(comb[, home], use="complete.obs"),method="number")
+```
+
+The strongest correlations are between price_doc and the full_sq and num_room features (which are also not surprisingly strongly correlated with each other).
+
+
+```{r}
+#Summarize potential house related features
+summary(comb[home])
+```
+
+```{r}
+# variables that are related to macroeconomic data
+macro_var <- c('gdp_quart','gdp_quart_growth','cpi','ppi','usdrub','eurrub','brent','gdp_annual','gdp_annual_growth','micex_rgbi_tr','mortgage_value','mortgage_rate','grp','grp_growth','price_doc')
+
+#,'gdp_annual','gdp_annual_growth','micex_rgbi_tr','mortgage_value','mortage_rate','grp','grp_growth','price_doc')
+#cor(comb[,macro_var])
+corrplot(cor(comb[, macro_var], use="complete.obs"))
+```
+
+There does not appear to be a strong correlation between the price_doc and the macroeconomic features examined above.
+
+```{r}
+#Summarize potential macroeconomic features
+summary(comb[macro_var])
+```
+
+```{r}
+#Build a simple linear regression model based on the structure related features
+homelm <- lm(price_doc~.,comb[home])
+#summarize model related information including R-Squared and Adjusted R-Squared
+summary(homelm)
+```
+
+```{r}
+#Build a simple linear regression model based on structure with the above macroeconomic features also added in
+modelfeatures <- c(home,macro_var) #combine above structure and macroeconomic related features
+modelfeatures <- modelfeatures[-c(24)] # Remove second instance of price_doc in list
+combinedlm <- lm(price_doc~.,comb[modelfeatures])
+#Summarize combined model
+summary(combinedlm)
+```
+R-Squared improved slightly with the addition of macroeconomic features
+
+Let's see if we can improve results by adding in the geographic sub area as a feature in the model:
+```{r}
+modelfeatures <- c(modelfeatures,'sub_area') #add in sub_area feature to model
+combinedlm <- lm(price_doc~.,comb[modelfeatures])
+#Summarize combined model
+summary(combinedlm)
+
+```
+
+Adding in the sub area of the property, perhaps unsurprisingly, results in a large increase in Adjusted R-Squared compared to the previous model.
+
+Predict sales prices for the test dataset:
+```{r}
+predprice <- predict(combinedlm,newdata=combtest)
+```
+
